@@ -26,7 +26,6 @@ Designed to find cash-cow companies with stable dividends and undervalued prices
 Designed to find high-growth tech companies with outstanding fundamentals.
 - **Industry**: Must belong to tech-related sectors (e.g., `半导体`, `计算机设备`, `软件开发`, `通信设备`, `通信服务`, `光学光电子`, `消费电子`, `元件`, `其他电子Ⅱ`, `电子化学品Ⅱ`, `IT服务Ⅱ`, `数字媒体`).
 - **Valuation**: `PE < min(3-year Revenue CAGR, 3-year Profit CAGR)` (PEG < 1)
-- **Dividend**: `TTM dividend yield > 0%`
 - **Market Cap**: `总市值 > 100亿元`
 - **Debt Ratio**: `资产负债率 < 50%`
 - **Profitability & Growth**:
