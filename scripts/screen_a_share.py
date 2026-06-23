@@ -6,9 +6,16 @@ import sys
 import time
 from typing import Optional
 
-import akshare as ak
+import concurrent.futures
+from data_provider import (
+    fetch_quote_snapshot_cached,
+    stock_yjbb_em_cached,
+    stock_zcfz_em_cached,
+    stock_dividend_cninfo_cached,
+    stock_info_a_code_name_cached,
+    clear_cache,
+)
 import pandas as pd
-import requests
 
 AUTO_REPORT_LOOKBACK = 4
 QUARTER_ENDS = ((3, 31), (6, 30), (9, 30), (12, 31))
@@ -17,63 +24,6 @@ LONG_TERM_CAGR_YEARS = 3
 DIVIDEND_TTM_DAYS = 365
 
 
-def to_secid(code: str) -> str:
-    if code.startswith(("600", "601", "603", "605", "688", "689")):
-        return "1." + code
-    return "0." + code
-
-
-def fetch_quote_snapshot(codes: list[str]) -> pd.DataFrame:
-    if not codes:
-        return pd.DataFrame(
-            columns=["股票代码", "股票简称", "最新价", "PE", "PB", "总市值"]
-        )
-
-    session = requests.Session()
-    session.headers.update(
-        {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
-    )
-    url = "https://push2delay.eastmoney.com/api/qt/ulist.np/get"
-    rows = []
-    for i in range(0, len(codes), 200):
-        batch = codes[i : i + 200]
-        secids = ",".join(to_secid(code) for code in batch)
-        resp = session.get(
-            url,
-            params={"secids": secids, "fields": "f12,f14,f2,f20,f23,f9,f115"},
-            timeout=20,
-        )
-        resp.raise_for_status()
-        rows.extend(((resp.json().get("data") or {}).get("diff") or []))
-        time.sleep(0.03)
-    df = pd.DataFrame(rows).rename(
-        columns={
-            "f12": "股票代码",
-            "f14": "股票简称",
-            "f2": "最新价_raw",
-            "f20": "总市值",
-            "f23": "PB_raw",
-            "f9": "PE_dynamic_raw",
-            "f115": "PE_ttm_raw",
-        }
-    )
-    df["股票代码"] = df["股票代码"].astype(str).str.zfill(6)
-    df["最新价"] = pd.to_numeric(df["最新价_raw"], errors="coerce")
-    df["最新价"] = df["最新价"].where(
-        ~(df["最新价"].notna() & (df["最新价"] % 1 == 0)), df["最新价"] / 100
-    )
-    df["PE"] = pd.to_numeric(df["PE_ttm_raw"], errors="coerce")
-    pe_dynamic = pd.to_numeric(df["PE_dynamic_raw"], errors="coerce")
-    df["PE"] = df["PE"].where(~df["PE"].isna(), pe_dynamic)
-    df["PE"] = df["PE"].where(
-        ~((df["PE"].abs() >= 200) & (df["PE"] % 1 == 0)), df["PE"] / 100
-    )
-    df["PB"] = pd.to_numeric(df["PB_raw"], errors="coerce")
-    df["PB"] = df["PB"].where(
-        ~((df["PB"].abs() >= 20) & (df["PB"] % 1 == 0)), df["PB"] / 100
-    )
-    df["总市值"] = pd.to_numeric(df["总市值"], errors="coerce")
-    return df[["股票代码", "股票简称", "最新价", "PE", "PB", "总市值"]]
 
 
 def calculate_ttm_dividend_yield_for_code(
@@ -86,7 +36,7 @@ def calculate_ttm_dividend_yield_for_code(
         return None
 
     try:
-        dividend_df = ak.stock_dividend_cninfo(symbol=symbol)
+        dividend_df = stock_dividend_cninfo_cached(symbol=symbol)
     except Exception:
         return None
 
@@ -145,7 +95,7 @@ def load_ttm_dividend_yield_table(
 
 
 def load_code_name_table() -> pd.DataFrame:
-    codes = ak.stock_info_a_code_name()[["code", "name"]].drop_duplicates().copy()
+    codes = stock_info_a_code_name_cached()[["code", "name"]].drop_duplicates().copy()
     codes["code"] = codes["code"].astype(str).str.zfill(6)
     codes["name"] = codes["name"].astype(str).str.strip()
     return codes.rename(columns={"code": "股票代码", "name": "股票简称"})
@@ -158,7 +108,7 @@ def build_quote_table(target_codes: Optional[list[str]] = None) -> pd.DataFrame:
     else:
         base = code_name_df[code_name_df["股票代码"].isin(target_codes)].copy()
 
-    quote = fetch_quote_snapshot(base["股票代码"].tolist()).drop(
+    quote = fetch_quote_snapshot_cached(base["股票代码"].tolist()).drop(
         columns=["股票简称"], errors="ignore"
     )
     merged = base.merge(quote, on="股票代码", how="left")
@@ -189,7 +139,7 @@ def infer_candidate_report_dates(
 
 
 def load_financial_tables(report_date: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    yjbb = ak.stock_yjbb_em(date=report_date)[
+    yjbb = stock_yjbb_em_cached(date=report_date)[
         [
             "股票代码",
             "股票简称",
@@ -197,13 +147,14 @@ def load_financial_tables(report_date: str) -> tuple[pd.DataFrame, pd.DataFrame]
             "营业总收入-同比增长",
             "净利润-净利润",
             "净利润-同比增长",
+            "所处行业",
             "最新公告日期",
         ]
     ].copy()
     yjbb["股票代码"] = yjbb["股票代码"].astype(str).str.zfill(6)
     yjbb["最新公告日期"] = pd.to_datetime(yjbb["最新公告日期"], errors="coerce").dt.date
 
-    zcfz = ak.stock_zcfz_em(date=report_date)[
+    zcfz = stock_zcfz_em_cached(date=report_date)[
         ["股票代码", "股票简称", "资产负债率", "公告日期"]
     ].copy()
     zcfz["股票代码"] = zcfz["股票代码"].astype(str).str.zfill(6)
@@ -231,8 +182,8 @@ def load_dynamic_cagr_table(
     annual_report_dates = infer_candidate_annual_report_dates(as_of_date)
     frames = []
 
-    for report_date in annual_report_dates:
-        yjbb = ak.stock_yjbb_em(date=report_date)[
+    def process_annual(report_date):
+        yjbb = stock_yjbb_em_cached(date=report_date)[
             [
                 "股票代码",
                 "股票简称",
@@ -240,6 +191,8 @@ def load_dynamic_cagr_table(
                 "营业总收入-同比增长",
                 "净利润-净利润",
                 "净利润-同比增长",
+                "净资产收益率",
+                "每股经营现金流量",
                 "最新公告日期",
             ]
         ].copy()
@@ -252,9 +205,9 @@ def load_dynamic_cagr_table(
             yjbb["营业总收入-同比增长"], errors="coerce"
         )
         yjbb["净利润-净利润"] = pd.to_numeric(yjbb["净利润-净利润"], errors="coerce")
-        yjbb["净利润-同比增长"] = pd.to_numeric(
-            yjbb["净利润-同比增长"], errors="coerce"
-        )
+        yjbb["净利润-同比增长"] = pd.to_numeric(yjbb["净利润-同比增长"], errors="coerce")
+        yjbb["净资产收益率"] = pd.to_numeric(yjbb["净资产收益率"], errors="coerce")
+        yjbb["每股经营现金流量"] = pd.to_numeric(yjbb["每股经营现金流量"], errors="coerce")
 
         if target_codes is not None:
             yjbb = yjbb[yjbb["股票代码"].isin(target_codes)].copy()
@@ -263,12 +216,19 @@ def load_dynamic_cagr_table(
             yjbb["最新公告日期"].notna() & (yjbb["最新公告日期"] <= as_of_date)
         ].copy()
         if yjbb.empty:
-            continue
+            return None
 
         yjbb["年报期末"] = report_date
         yjbb["年报年份"] = int(report_date[:4])
-        frames.append(yjbb)
+        return yjbb
 
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(process_annual, d) for d in annual_report_dates]
+        for future in concurrent.futures.as_completed(futures):
+            res = future.result()
+            if res is not None:
+                frames.append(res)
+                
     if not frames:
         return pd.DataFrame(
             columns=[
@@ -276,7 +236,11 @@ def load_dynamic_cagr_table(
                 "CAGR终点年报",
                 "CAGR起点年报",
                 "3年连续双增长",
+                "3年营收同比均为正",
+                "3年净利润同比均为正",
+                "3年平均净资产收益率",
                 "3年平均净利率",
+                "3年经营现金流平均增速",
                 "3年营收CAGR",
                 "3年净利润CAGR",
             ]
@@ -329,21 +293,43 @@ def load_dynamic_cagr_table(
             ) * 100.0
 
         avg_net_margin = None
+        avg_roe = None
         continuous_growth = False
-        target_years = [int(end_row["年报年份"]) - i for i in range(LONG_TERM_CAGR_YEARS)]
-        last_5_years_grp = grp[grp["年报年份"].isin(target_years)]
-        if len(last_5_years_grp) == LONG_TERM_CAGR_YEARS:
-            rev = last_5_years_grp["营业总收入-营业总收入"]
-            prof = last_5_years_grp["净利润-净利润"]
+        revenue_growth_positive = False
+        profit_growth_positive = False
+        target_years = [
+            int(end_row["年报年份"]) - i for i in range(LONG_TERM_CAGR_YEARS)
+        ]
+        annual_window_grp = grp[grp["年报年份"].isin(target_years)]
+        if len(annual_window_grp) == LONG_TERM_CAGR_YEARS:
+            rev = annual_window_grp["营业总收入-营业总收入"]
+            prof = annual_window_grp["净利润-净利润"]
             if (rev > 0).all() and prof.notna().all():
                 margins = prof / rev * 100.0
                 avg_net_margin = margins.mean()
-            
-            rev_yoy = last_5_years_grp["营业总收入-同比增长"]
-            prof_yoy = last_5_years_grp["净利润-同比增长"]
+            roe = annual_window_grp["净资产收益率"]
+            if roe.notna().all():
+                avg_roe = roe.mean()
+
+            rev_yoy = annual_window_grp["营业总收入-同比增长"]
+            prof_yoy = annual_window_grp["净利润-同比增长"]
+            if rev_yoy.notna().all():
+                revenue_growth_positive = (rev_yoy > 0).all()
+            if prof_yoy.notna().all():
+                profit_growth_positive = (prof_yoy > 0).all()
             if rev_yoy.notna().all() and prof_yoy.notna().all():
-                if (rev_yoy > 0).all() and (prof_yoy > 0).all():
+                if revenue_growth_positive and profit_growth_positive:
                     continuous_growth = True
+
+            avg_cash_growth = None
+            cash_flow = annual_window_grp["每股经营现金流量"]
+            if cash_flow.notna().all():
+                cash_flow_asc = cash_flow.iloc[::-1]
+                cash_diff = cash_flow_asc.diff()
+                prev_cash_abs = cash_flow_asc.shift().abs().replace(0, pd.NA)
+                cash_yoy = cash_diff / prev_cash_abs
+                if cash_yoy.notna().any():
+                    avg_cash_growth = float(cash_yoy.dropna().mean() * 100.0)
 
         rows.append(
             {
@@ -351,7 +337,11 @@ def load_dynamic_cagr_table(
                 "CAGR终点年报": str(end_row["年报期末"]),
                 "CAGR起点年报": str(start_row["年报期末"]),
                 "3年连续双增长": continuous_growth,
+                "3年营收同比均为正": revenue_growth_positive,
+                "3年净利润同比均为正": profit_growth_positive,
+                "3年平均净资产收益率": avg_roe,
                 "3年平均净利率": avg_net_margin,
+                "3年经营现金流平均增速": avg_cash_growth,
                 "3年营收CAGR": revenue_cagr,
                 "3年净利润CAGR": profit_cagr,
             }
@@ -370,42 +360,44 @@ def load_financial_table_as_of(
     )
     frames = []
 
-    for candidate in candidate_report_dates:
+    def process_candidate(candidate):
         yjbb, zcfz = load_financial_tables(candidate)
-
         if target_codes is not None:
             yjbb = yjbb[yjbb["股票代码"].isin(target_codes)].copy()
             zcfz = zcfz[zcfz["股票代码"].isin(target_codes)].copy()
-
         yjbb = yjbb[
             yjbb["最新公告日期"].notna() & (yjbb["最新公告日期"] <= as_of_date)
         ].copy()
         zcfz = zcfz[zcfz["公告日期"].notna() & (zcfz["公告日期"] <= as_of_date)].copy()
-
         merged = yjbb.merge(
             zcfz[["股票代码", "资产负债率", "公告日期"]], on="股票代码", how="inner"
         )
         if merged.empty:
-            continue
-
+            return None
         merged["财务报告期"] = candidate
-        frames.append(
-            merged[
-                [
-                    "股票代码",
-                    "股票简称",
-                    "财务报告期",
-                    "营业总收入-营业总收入",
-                    "营业总收入-同比增长",
-                    "净利润-净利润",
-                    "净利润-同比增长",
-                    "资产负债率",
-                    "最新公告日期",
-                    "公告日期",
-                ]
+        return merged[
+            [
+                "股票代码",
+                "股票简称",
+                "财务报告期",
+                "营业总收入-营业总收入",
+                "营业总收入-同比增长",
+                "净利润-净利润",
+                "净利润-同比增长",
+                "资产负债率",
+                "所处行业",
+                "最新公告日期",
+                "公告日期",
             ]
-        )
+        ]
 
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(process_candidate, c) for c in candidate_report_dates]
+        for future in concurrent.futures.as_completed(futures):
+            res = future.result()
+            if res is not None:
+                frames.append(res)
+                
     if not frames:
         empty = pd.DataFrame(
             columns=[
@@ -417,6 +409,7 @@ def load_financial_table_as_of(
                 "净利润-净利润",
                 "净利润-同比增长",
                 "资产负债率",
+                "所处行业",
                 "最新公告日期",
                 "公告日期",
             ]
@@ -482,6 +475,7 @@ def attach_latest_financial_fields(
                 "净利润-净利润",
                 "净利润-同比增长",
                 "资产负债率",
+                "所处行业",
                 "最新公告日期",
                 "公告日期",
             ]
@@ -495,7 +489,19 @@ def attach_latest_financial_fields(
 def attach_dynamic_cagr_fields(df: pd.DataFrame, as_of_date: date) -> pd.DataFrame:
     if df.empty:
         result = df.copy()
-        for col in ["CAGR终点年报", "CAGR起点年报", "3年连续双增长", "3年平均净利率", "3年营收CAGR", "3年净利润CAGR"]:
+        for col in [
+            "CAGR终点年报",
+            "CAGR起点年报",
+            "3年连续双增长",
+            "3年营收同比均为正",
+            "3年净利润同比均为正",
+            "3年平均净资产收益率",
+            "3年平均净资产收益率",
+            "3年平均净利率",
+            "3年经营现金流平均增速",
+            "3年营收CAGR",
+            "3年净利润CAGR",
+        ]:
             result[col] = pd.Series(dtype="object")
         return result
 
@@ -505,7 +511,19 @@ def attach_dynamic_cagr_fields(df: pd.DataFrame, as_of_date: date) -> pd.DataFra
     )
     return df.merge(
         cagr_table[
-            ["股票代码", "CAGR终点年报", "CAGR起点年报", "3年连续双增长", "3年平均净利率", "3年营收CAGR", "3年净利润CAGR"]
+            [
+                "股票代码",
+                "CAGR终点年报",
+                "CAGR起点年报",
+                "3年连续双增长",
+                "3年营收同比均为正",
+                "3年净利润同比均为正",
+                "3年平均净资产收益率",
+                "3年平均净利率",
+                "3年经营现金流平均增速",
+                "3年营收CAGR",
+                "3年净利润CAGR",
+            ]
         ],
         on="股票代码",
         how="left",
@@ -588,108 +606,44 @@ def passes_valuation_formula(row: pd.Series, max_value: float) -> bool:
     return pd.notna(value) and float(value) < max_value
 
 
-def filter_by_market_thresholds(df: pd.DataFrame, args: argparse.Namespace) -> pd.DataFrame:
+
+def filter_dividend_strategy(df: pd.DataFrame, args: argparse.Namespace) -> pd.DataFrame:
     if df.empty:
         return df.copy()
     mask = (
-        df["估值公式值"].notna()
-        & (df["估值公式值"] < args.valuation_formula_max)
-        & df["总市值"].notna()
-        & (df["总市值"] > args.market_cap_min_yi * 1e8)
-    )
-    return df[mask].copy()
-
-
-def filter_by_financial_thresholds(
-    df: pd.DataFrame, args: argparse.Namespace
-) -> pd.DataFrame:
-    if df.empty:
-        return df.copy()
-    mask = (
-        df["资产负债率"].notna()
-        & (df["资产负债率"] < args.debt_ratio_max)
-    )
-    return df[mask].copy()
-
-
-def filter_by_cagr_thresholds(df: pd.DataFrame, args: argparse.Namespace) -> pd.DataFrame:
-    if df.empty:
-        return df.copy()
-    mask = (
-        df["3年平均净利率"].notna()
-        & (df["3年平均净利率"] > args.avg_net_profit_margin_min)
-        & df["3年净利润CAGR"].notna()
-        & (df["3年净利润CAGR"] > args.profit_cagr_min)
+        df["估值公式值"].notna() & (df["估值公式值"] < args.valuation_formula_max)
+        & df["3年经营现金流平均增速"].notna() & (df["3年经营现金流平均增速"] > 0)
+        & df["总市值"].notna() & (df["总市值"] > args.market_cap_min_yi * 1e8)
+        & df["资产负债率"].notna() & (df["资产负债率"] < args.debt_ratio_max)
+        & df["3年平均净利率"].notna() & (df["3年平均净利率"] > args.avg_net_profit_margin_min)
+        & df["3年净利润CAGR"].notna() & (df["3年净利润CAGR"] > args.profit_cagr_min)
+        & (df["3年营收同比均为正"] == True)
+        & (df["3年净利润同比均为正"] == True)
     )
     if args.require_continuous_growth:
         mask = mask & (df["3年连续双增长"] == True)
     return df[mask].copy()
 
+TECH_INDUSTRIES = ["半导体", "计算机设备", "软件开发", "通信设备", "通信服务", "光学光电子", "消费电子", "元件", "其他电子Ⅱ", "电子化学品Ⅱ", "IT服务Ⅱ", "数字媒体"]
 
-def filter_by_dividend_thresholds(
-    df: pd.DataFrame, args: argparse.Namespace
-) -> pd.DataFrame:
+def filter_growth_strategy(df: pd.DataFrame, args: argparse.Namespace) -> pd.DataFrame:
     if df.empty:
         return df.copy()
-    mask = df["TTM股息率"].notna() & (df["TTM股息率"] > args.dividend_yield_min)
+    mask = (
+        df["总市值"].notna() & (df["总市值"] > args.market_cap_min_yi * 1e8)
+        & df["所处行业"].isin(TECH_INDUSTRIES)
+        & df["资产负债率"].notna() & (df["资产负债率"] < args.debt_ratio_max)
+        & df["3年平均净资产收益率"].notna() & (df["3年平均净资产收益率"] > args.growth_roe_min)
+        & df["3年平均净利率"].notna() & (df["3年平均净利率"] > args.avg_net_profit_margin_min)
+        & df["3年净利润CAGR"].notna() & (df["3年净利润CAGR"] > args.growth_profit_cagr_min)
+        & df["3年营收CAGR"].notna() & (df["3年营收CAGR"] > args.growth_revenue_cagr_min)
+        & (df["3年营收同比均为正"] == True)
+        & (df["3年净利润同比均为正"] == True)
+        & df["PE"].notna() & (df["PE"] < df["3年营收CAGR"]) & (df["PE"] < df["3年净利润CAGR"])
+    )
+    if args.require_continuous_growth:
+        mask = mask & (df["3年连续双增长"] == True)
     return df[mask].copy()
-
-
-def passes_thresholds(row: pd.Series, args: argparse.Namespace) -> bool:
-    return (
-        passes_valuation_formula(row, args.valuation_formula_max)
-        and pd.notna(row["TTM股息率"])
-        and row["TTM股息率"] > args.dividend_yield_min
-        and pd.notna(row["总市值"])
-        and row["总市值"] > args.market_cap_min_yi * 1e8
-        and pd.notna(row["3年平均净利率"])
-        and row["3年平均净利率"] > args.avg_net_profit_margin_min
-        and pd.notna(row["3年净利润CAGR"])
-        and row["3年净利润CAGR"] > args.profit_cagr_min
-        and pd.notna(row["资产负债率"])
-        and row["资产负债率"] < args.debt_ratio_max
-    )
-
-
-def passes_non_dividend_thresholds(row: pd.Series, args: argparse.Namespace) -> bool:
-    return (
-        passes_valuation_formula(row, args.valuation_formula_max)
-        and pd.notna(row["总市值"])
-        and row["总市值"] > args.market_cap_min_yi * 1e8
-        and pd.notna(row["3年平均净利率"])
-        and row["3年平均净利率"] > args.avg_net_profit_margin_min
-        and pd.notna(row["3年净利润CAGR"])
-        and row["3年净利润CAGR"] > args.profit_cagr_min
-        and pd.notna(row["资产负债率"])
-        and row["资产负债率"] < args.debt_ratio_max
-    )
-
-
-def filter_by_thresholds(df: pd.DataFrame, args: argparse.Namespace) -> pd.DataFrame:
-    return filter_by_dividend_thresholds(
-        filter_by_cagr_thresholds(
-            filter_by_financial_thresholds(
-                filter_by_market_thresholds(df, args),
-                args,
-            ),
-            args,
-        ),
-        args,
-    )
-
-
-def filter_by_non_dividend_thresholds(
-    df: pd.DataFrame, args: argparse.Namespace
-) -> pd.DataFrame:
-    return filter_by_cagr_thresholds(
-        filter_by_financial_thresholds(
-            filter_by_market_thresholds(df, args),
-            args,
-        ),
-        args,
-    )
-
-
 def attach_ttm_dividend_yield(
     df: pd.DataFrame, as_of_date: date
 ) -> pd.DataFrame:
@@ -715,6 +669,8 @@ def threshold_payload(args: argparse.Namespace) -> dict:
         "dividend_yield_basis": "TTM_dividend_yield_from_last_12_months_cash_dividend",
         "market_cap_min_yi": args.market_cap_min_yi,
         "avg_net_profit_margin_min": args.avg_net_profit_margin_min,
+        "revenue_yoy_positive_years": LONG_TERM_CAGR_YEARS,
+        "profit_yoy_positive_years": LONG_TERM_CAGR_YEARS,
         "require_continuous_growth": args.require_continuous_growth,
         "profit_cagr_min": args.profit_cagr_min,
         "long_term_cagr_years": LONG_TERM_CAGR_YEARS,
@@ -738,7 +694,12 @@ def output_columns(df: pd.DataFrame) -> pd.DataFrame:
             "CAGR终点年报",
             "CAGR起点年报",
             "3年连续双增长",
+            "3年营收同比均为正",
+            "3年净利润同比均为正",
+            "3年平均净资产收益率",
             "3年平均净利率",
+            "3年经营现金流平均增速",
+            "所处行业",
             "3年营收CAGR",
             "3年净利润CAGR",
             "资产负债率",
@@ -793,6 +754,18 @@ def evaluate_holding(row: pd.Series, args: argparse.Namespace, user_input: str) 
             lambda x: x > args.profit_cagr_min,
         ),
         (
+            "3年营收同比均为正",
+            "最近3个年报的营业总收入同比增长率每年都 > 0",
+            1.0 if row.get("3年营收同比均为正") else 0.0,
+            lambda x: x == 1.0,
+        ),
+        (
+            "3年净利润同比均为正",
+            "最近3个年报的净利润同比增长率每年都 > 0",
+            1.0 if row.get("3年净利润同比均为正") else 0.0,
+            lambda x: x == 1.0,
+        ),
+        (
             "资产负债率",
             f"资产负债率 < {args.debt_ratio_max}%",
             row["资产负债率"],
@@ -840,6 +813,8 @@ def evaluate_holding(row: pd.Series, args: argparse.Namespace, user_input: str) 
             "CAGR终点年报": string_or_none(row.get("CAGR终点年报")),
             "CAGR起点年报": string_or_none(row.get("CAGR起点年报")),
             "3年连续双增长": row.get("3年连续双增长"),
+            "3年营收同比均为正": row.get("3年营收同比均为正"),
+            "3年净利润同比均为正": row.get("3年净利润同比均为正"),
             "3年平均净利率": number_or_none(row["3年平均净利率"]),
             "3年营收CAGR": number_or_none(row["3年营收CAGR"]),
             "3年净利润CAGR": number_or_none(row["3年净利润CAGR"]),
@@ -862,14 +837,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--valuation-formula-max", type=float, default=10.0)
     parser.add_argument("--dividend-yield-min", type=float, default=3.0)
     parser.add_argument("--market-cap-min-yi", type=float, default=100.0)
-    parser.add_argument("--avg-net-profit-margin-min", type=float, default=5.0)
+    parser.add_argument("--avg-net-profit-margin-min", type=float, default=10.0)
     parser.add_argument("--require-continuous-growth", action="store_true")
     parser.add_argument("--profit-cagr-min", type=float, default=5.0)
+    parser.add_argument("--growth-profit-cagr-min", type=float, default=20.0)
+    parser.add_argument("--growth-revenue-cagr-min", type=float, default=20.0)
+    parser.add_argument("--growth-roe-min", type=float, default=10.0)
     parser.add_argument("--debt-ratio-max", type=float, default=50.0)
     parser.add_argument(
         "--output-file",
         help="Optional JSON output file path. If omitted, print to stdout.",
     )
+    parser.add_argument("--force-refresh", action="store_true", help="Force clear cache")
     parser.add_argument(
         "--holding",
         action="append",
@@ -881,6 +860,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
 
+    if args.force_refresh:
+        clear_cache()
     quote_snapshot_date = date.today()
     snapshot_date = quote_snapshot_date.isoformat()
     holdings = parse_holding_inputs(args.holding)
@@ -921,19 +902,55 @@ def main() -> int:
         }
     else:
         quote_stage = build_quote_table()
-        market_stage = filter_by_market_thresholds(quote_stage, args)
         with_financial, candidate_report_dates, financial_mode = attach_latest_financial_fields(
-            market_stage,
+            quote_stage,
             as_of_date=quote_snapshot_date,
             report_date=args.report_date,
         )
-        financial_stage = filter_by_financial_thresholds(with_financial, args)
-        with_cagr = attach_dynamic_cagr_fields(financial_stage, as_of_date=quote_snapshot_date)
-        cagr_stage = filter_by_cagr_thresholds(with_cagr, args)
-        with_dividend = attach_ttm_dividend_yield(cagr_stage, quote_snapshot_date)
-        result = output_columns(filter_by_dividend_thresholds(with_dividend, args))
+        with_cagr = attach_dynamic_cagr_fields(with_financial, as_of_date=quote_snapshot_date)
+        
+        # Fork strategies
+        dividend_candidates = filter_dividend_strategy(with_cagr, args)
+        growth_candidates = filter_growth_strategy(with_cagr, args)
+        
+        # Combine unique codes to fetch dividend yields
+        combined_codes = pd.concat([dividend_candidates["股票代码"], growth_candidates["股票代码"]]).drop_duplicates().tolist()
+        combined_df = with_cagr[with_cagr["股票代码"].isin(combined_codes)].copy()
+        with_dividend = attach_ttm_dividend_yield(combined_df, quote_snapshot_date)
+        
+        # Apply dividend filter for dividend strategy
+        final_dividend = with_dividend[with_dividend["股票代码"].isin(dividend_candidates["股票代码"])].copy()
+        if not final_dividend.empty:
+            final_dividend = final_dividend[final_dividend["TTM股息率"].notna() & (final_dividend["TTM股息率"] > args.dividend_yield_min)].copy()
+            
+        final_growth = with_dividend[with_dividend["股票代码"].isin(growth_candidates["股票代码"])].copy()
+        
+        div_result = output_columns(final_dividend)
+        gro_result = output_columns(final_growth)
+        
+        diff = {
+            "dividend": {"added": [], "removed": []},
+            "growth": {"added": [], "removed": []}
+        }
+        if args.output_file:
+            import os
+            if os.path.exists(args.output_file):
+                try:
+                    with open(args.output_file, "r", encoding="utf-8") as f:
+                        old_payload = json.load(f)
+                    old_div = {r["股票简称"] for r in old_payload.get("results", {}).get("dividend", [])}
+                    old_gro = {r["股票简称"] for r in old_payload.get("results", {}).get("growth", [])}
+                    new_div = {r["股票简称"] for r in div_result.to_dict(orient="records")}
+                    new_gro = {r["股票简称"] for r in gro_result.to_dict(orient="records")}
+                    diff["dividend"]["added"] = list(new_div - old_div)
+                    diff["dividend"]["removed"] = list(old_div - new_div)
+                    diff["growth"]["added"] = list(new_gro - old_gro)
+                    diff["growth"]["removed"] = list(old_gro - new_gro)
+                except Exception:
+                    pass
+
         payload = {
-            "mode": "screen",
+            "mode": "screen_all",
             "snapshot_date": snapshot_date,
             "financial_as_of_date": snapshot_date,
             "financial_selection_mode": financial_mode,
@@ -942,13 +959,14 @@ def main() -> int:
             "thresholds": threshold_payload(args),
             "stage_counts": {
                 "quote_stage": int(len(quote_stage)),
-                "market_stage": int(len(market_stage)),
-                "financial_stage": int(len(financial_stage)),
-                "cagr_stage": int(len(cagr_stage)),
-                "final_stage": int(len(result)),
+                "dividend_final": int(len(div_result)),
+                "growth_final": int(len(gro_result)),
             },
-            "count": int(len(result)),
-            "results": result.to_dict(orient="records"),
+            "results": {
+                "dividend": div_result.to_dict(orient="records"),
+                "growth": gro_result.to_dict(orient="records"),
+            },
+            "diff": diff
         }
 
     if args.output_file:

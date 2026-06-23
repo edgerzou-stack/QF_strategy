@@ -1,96 +1,66 @@
 ---
 name: a-share-factor-screen
-description: Use when the user wants to screen A-share stocks by live valuation, dividend yield, market cap, revenue/profit growth, debt ratio, or similar factor rules, especially when the user wants the latest disclosed quarter and current quote data.
+description: Use when the user wants to screen A-share stocks using the dual-core strategy (Dividend Strategy & Growth Strategy) with live valuation, dividend yield, market cap, revenue/profit growth, debt ratio, cash flow, and industry constraints.
 ---
 
 # A-Share Factor Screen
 
-Use this skill when the user asks for A-share stock screening with numeric rules such as:
+Use this skill when the user asks for A-share stock screening with our predefined dual-core strategy. The script now automatically runs both strategies and outputs a combined result.
 
-- `PB`, `PE`, market cap, dividend yield
-- 3-year average net profit margin
-- 3-year continuous growth in revenue and profit
-- 3-year profit CAGR
-- debt ratio
-- combinations like `dividend yield > 3%`, `market cap > 10B`, `3-year average net profit margin > 5%`, `3-year profit CAGR > 5%`
-- custom valuation formulas such as:
-  - `(总市值 - 总市值 / PB) / (总市值 / PE) < 10`
+## Dual-Core Strategies
 
-## Data policy
+### 1. 稳健红利策略 (Dividend Strategy)
+Designed to find cash-cow companies with stable dividends and undervalued prices.
+- **Valuation**: `(总市值 - 总市值 / PB) / (总市值 / PE) < 10` (equivalent to `PE * (PB - 1) / PB < 10`)
+- **Dividend**: `TTM dividend yield > 3.0%`
+- **Market Cap**: `总市值 > 100亿元`
+- **Debt Ratio**: `资产负债率 < 50%`
+- **Profitability & Growth**:
+  - `3年净利润CAGR > 5%`
+  - `3年连续双增长` (Revenue & Profit YoY > 0 for 3 consecutive years)
+  - `3年平均净利率 > 10%`
+- **Cash Flow Moat**:
+  - `3年经营现金流平均增速 > 0%` (Average of the last 3 years' operating cash flow YoY growth)
 
+### 2. 高增成长策略 (Growth Strategy)
+Designed to find high-growth tech companies with outstanding fundamentals.
+- **Industry**: Must belong to tech-related sectors (e.g., `半导体`, `计算机设备`, `软件开发`, `通信设备`, `通信服务`, `光学光电子`, `消费电子`, `元件`, `其他电子Ⅱ`, `电子化学品Ⅱ`, `IT服务Ⅱ`, `数字媒体`).
+- **Valuation**: `PE < min(3-year Revenue CAGR, 3-year Profit CAGR)` (PEG < 1)
+- **Dividend**: `TTM dividend yield > 0%`
+- **Market Cap**: `总市值 > 100亿元`
+- **Debt Ratio**: `资产负债率 < 50%`
+- **Profitability & Growth**:
+  - `3年平均净资产收益率 (ROE) > 10%`
+  - `3年营收CAGR > 20%`
+  - `3年净利润CAGR > 20%`
+  - `3年连续双增长` (Revenue & Profit YoY > 0 for 3 consecutive years)
+  - `3年平均净利率 > 10%`
+
+## Data Policy
 - Treat `current quote fields` as the primary basis for market screening.
-- Always use the latest quote snapshot for:
-  - `PB`
-  - `PE(TTM)`
-  - `latest price`
-  - `market cap`
-- Treat `TTM dividend yield` as a derived field:
-  - use the latest quote-snapshot price as denominator
-  - use cash dividends implemented in the last 12 months as numerator
-- Treat `debt ratio` as the latest disclosed quarter unless the user asks for a specific report date.
-- Treat `3-year revenue CAGR` and `3-year profit CAGR` as annual-report based and compute them from each stock's latest disclosed year-end report and the corresponding year-end report 3 years earlier.
-- If the user says `latest`, `current`, `today`, or similar, use the latest available quote snapshot plus the latest disclosed quarter.
+- Always use the latest quote snapshot for: `PB`, `PE(TTM)`, `latest price`, `market cap`.
+- Treat `TTM dividend yield` as a derived field: latest quote-snapshot price as denominator, cash dividends implemented in the last 12 months as numerator.
+- `3-year` metrics (CAGR, Margins, Cash Flow) are computed from each stock's latest disclosed year-end reports over a 3-year window.
 - Always state the report date used for financial growth and debt ratio.
-- Do not use annual-report dividend-yield tables in the main conclusion unless the user explicitly asks for annual-report dividend yield or dividend-plan analysis.
 
 ## Workflow
 
-1. Run `scripts/screen_a_share.py` with explicit thresholds.
-2. Prefer the staged flow:
-   - stage 1: quote snapshot only, filter by valuation formula and market cap
-   - stage 2: latest disclosed financial report, filter by debt ratio
-   - stage 3: dynamic 3-year annual metrics, filter by average net profit margin, revenue CAGR, and profit CAGR
-   - stage 4: TTM dividend yield, filter final candidates
-2. Report:
-   - the latest report date used
-   - the exact thresholds used
-   - the matched stocks
-3. If the user points out a missing stock, re-check that ticker individually and explain which field or data-source mismatch caused the discrepancy.
+1. Run `scripts/screen_a_share.py` to fetch data and run the core dual-strategy logic. This script automatically saves state and calculates the `diff` (added/removed stocks) compared to the previous run.
+2. Run `scripts/generate_report.py` to parse the output JSON into a final Markdown report containing formatted tables and highlighted watchlist changes.
+3. Check the output Markdown (e.g., `screening_results.md`) and present it to the user.
 
-## Default thresholds mapping
+## Script Usage
 
-- `market cap > 100亿` -> `10000000000`
-- `dividend yield > 3%` means `TTM dividend yield from last 12 months cash dividends`
-- `PB` and `PE(TTM)` come from `today's quote snapshot`
-- default valuation rule:
-  - `(总市值 - 总市值 / PB) / (总市值 / PE) < 10`
-  - equivalent implementation:
-    - `PE * (PB - 1) / PB < 10`
-- `3-year revenue CAGR > 5%` means:
-  - use `营业总收入-营业总收入`
-  - use each stock's latest disclosed annual report as endpoint
-  - use the annual report 3 years earlier as start point
-  - require both endpoints to be positive
-- `3-year profit CAGR > 5%` means:
-  - use `净利润-净利润`
-  - use each stock's latest disclosed annual report as endpoint
-  - use the annual report 3 years earlier as start point
-  - require both endpoints to be positive
-- `3-year average net profit margin > 5%` means:
-  - calculate `净利润-净利润 / 营业总收入-营业总收入 * 100` for the latest 3 annual reports ending at the latest disclosed annual report as of the quote date
-  - take the mean of these 3 margins
-  - require `营业总收入-营业总收入` > 0 for all 3 years
-- `3-year continuous growth in revenue and profit` means:
-  - `营业总收入-同比增长 > 0` and `净利润-同比增长 > 0` for all 3 annual reports in the 3-year window.
-- `debt ratio` means asset-liability ratio from the latest disclosed quarter
-
-## Script
-
-Run:
-
-```bash
-python3 /Users/zouzhengting/.codex/skills/a-share-factor-screen/scripts/screen_a_share.py --help
-```
-
-Common example:
-
+First, run the data engine:
 ```bash
 python3 /Users/zouzhengting/.codex/skills/a-share-factor-screen/scripts/screen_a_share.py \
-  --valuation-formula-max 10 \
-  --dividend-yield-min 3 \
-  --market-cap-min-yi 100 \
-  --avg-net-profit-margin-min 5 \
   --require-continuous-growth \
-  --profit-cagr-min 5 \
-  --debt-ratio-max 50
+  --output-file dual_screen.json
+```
+
+Then, generate the Markdown report with the persistent watchlist diff prompts:
+```bash
+python3 /Users/zouzhengting/.codex/skills/a-share-factor-screen/scripts/generate_report.py \
+  dual_screen.json \
+  /Users/zouzhengting/.gemini/antigravity/brain/cb368359-75c4-4195-b42f-77230af3485d/screening_results.md
 ```
