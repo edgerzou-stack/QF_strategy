@@ -37,8 +37,12 @@ QF_strategy 是一个基于 Python 和 [Akshare](https://github.com/akfamily/aks
 随后根据上述的双轨策略进行层层过滤。
 **亮点**：脚本在生成当前结果后，会自动读取本地现存的 `dual_screen.json`（上一次的旧数据），利用 Set 集合求差集，算出**新增**与**剔除**的股票，并将对比结果（Diff）一并写入全新的 JSON。
 
-### 2. 自动化研报生成：`generate_report.py`
-读取 JSON 结果，渲染成清晰的 Markdown 数据表格。并在表格底部自动追加“调仓提示”（例如：🟢 新增入池、🔴 掉出观测），让使用者一目了然。
+### 2. 自动化研报生成与资金曲线绘制：`generate_report.py` & `plot_pnl.py`
+读取 JSON 结果，同时渲染出**两种格式的专业报告**：
+1. **Markdown 数据表**：轻量级、方便提交 Git 和命令行快速预览。
+2. **离线单页面 HTML 交互报告**：具备极简现代化的 UI 设计，盈亏数值按红绿高亮，甚至使用 base64 原生内嵌了图表。
+
+此外，系统还自带严格的**历史交割追踪机制 (Trade History)**。当股票在调仓中被“剔除”时，会自动向历史真实行情接口回溯该股票在“买入日”和“卖出日”的确切收盘价，精准核算最终盈亏率（PnL）。通过运行 `plot_pnl.py`，可以直接基于所有的平仓记录绘制出**等权累计净收益曲线 (Equity Curve)**，直观展现量化策略长期运作中的纯资金走势与盈亏比表现，该图表会被自动内嵌到最终的 HTML 报告中。
 
 ---
 
@@ -46,7 +50,7 @@ QF_strategy 是一个基于 Python 和 [Akshare](https://github.com/akfamily/aks
 
 ### 环境依赖
 ```bash
-pip install pandas akshare requests
+pip install pandas akshare requests matplotlib
 ```
 
 ### 运行全量筛选
@@ -54,11 +58,14 @@ pip install pandas akshare requests
 # 1. 运行核心选股引擎，执行双轨过滤，结果保存至 dual_screen.json
 python3 scripts/screen_a_share.py --require-continuous-growth --output-file dual_screen.json
 
-# 2. 将 JSON 数据渲染为带调仓提示的 Markdown 研报
+# 2. 生成盈亏曲线图 (可选，但推荐)
+python3 scripts/plot_pnl.py
+
+# 3. 将 JSON 数据渲染为带调仓提示的 Markdown 和 HTML 双语研报
 python3 scripts/generate_report.py dual_screen.json screening_results.md
 ```
 
-完成后，直接打开 `screening_results.md` 即可查阅最新金股池及调仓动态！
+完成后，直接在浏览器中打开 `screening_results.html`（或查看 `.md`）即可查阅最新金股池、历史资金曲线及调仓动态！
 
 ---
 
