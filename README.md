@@ -69,5 +69,22 @@ python3 scripts/generate_report.py dual_screen.json screening_results.md
 
 ---
 
+## 🤖 自动化无人值守运行 (Crontab Automation)
+
+本项目内置了带交易日历识别的自动调度脚本。如果你希望程序在每个交易日的下午 14:00 自动更新报告，可以在终端配置定时任务：
+
+1. 编辑定时任务表：
+```bash
+crontab -e
+```
+2. 追加以下配置项（注意替换为你自己的绝对路径）：
+```bash
+0 14 * * 1-5 /usr/bin/python3 /绝对路径/scripts/daily_runner.py >> /绝对路径/logs/daily_run.log 2>&1
+```
+
+配置完成后，脚本只会在真实的 A 股交易日被唤醒并执行上述完整的计算和报告渲染流程。遇到周末或节假日会自动静默退出。
+
+---
+
 ## 📝 Disclaimer
 本项目的所有代码及选股策略仅供量化程序学习与技术交流使用，所输出的股票名单不构成任何投资建议。股市有风险，投资需谨慎！
