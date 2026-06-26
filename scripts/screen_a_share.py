@@ -991,12 +991,12 @@ def main() -> int:
                         trade_history.append({"strategy": "growth", "name": name, "entry_date": old_gro_port.get(name, {}).get("entry_date", "未知"), "entry_price": ep, "exit_date": snapshot_date, "exit_price": cp, "pnl": pnl})
                         
                     for name in new_div:
-                        if name in old_div_port and old_div_port[name].get("entry_price", 0) > 0:
+                        if name in old_div_port:
                             portfolio["dividend"][name] = old_div_port[name]
                         else:
                             portfolio["dividend"][name] = {"entry_date": snapshot_date, "entry_price": current_prices.get(name, 0)}
                     for name in new_gro:
-                        if name in old_gro_port and old_gro_port[name].get("entry_price", 0) > 0:
+                        if name in old_gro_port:
                             portfolio["growth"][name] = old_gro_port[name]
                         else:
                             portfolio["growth"][name] = {"entry_date": snapshot_date, "entry_price": current_prices.get(name, 0)}
