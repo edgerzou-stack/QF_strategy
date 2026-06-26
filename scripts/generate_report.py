@@ -41,6 +41,7 @@ def main():
     div_results = results.get("dividend", [])
     gro_results = results.get("growth", [])
     diff = data.get("diff", {})
+    trade_history = data.get("trade_history", [])
 
     out = f"# A 股全市场双核心策略筛选结果\n\n"
     out += f"本次运行基于当前最新行情快照，自动同步计算出以下两大策略标的池。\n\n"
@@ -99,6 +100,25 @@ def main():
             out += f"> 🔴 **掉出观测**：{', '.join(removed_strs)}\n"
         out += "\n\n"
 
+
+    # 3. 历史交割记录
+    if trade_history:
+        out += "## 三、历史交割记录 (Closed Trades)\n\n"
+        out += "| 策略类型 | 股票简称 | 买入日期 | 买入价格 | 卖出日期 | 卖出价格 | 最终盈亏率 |\n"
+        out += "|---|---|---|---|---|---|---|\n"
+        # Reverse to show newest trades first
+        for trade in reversed(trade_history):
+            strat = "稳健红利" if trade.get("strategy") == "dividend" else "高增成长"
+            name = trade.get("name", "")
+            in_d = trade.get("entry_date", "")
+            in_p = trade.get("entry_price", 0)
+            out_d = trade.get("exit_date", "")
+            out_p = trade.get("exit_price", 0)
+            pnl = trade.get("pnl", 0) * 100
+            
+            pnl_str = f"<span style='color:red'>+{pnl:.2f}%</span>" if pnl > 0 else f"<span style='color:green'>{pnl:.2f}%</span>"
+            out += f"| {strat} | {name} | {in_d} | {in_p:.2f} | {out_d} | {out_p:.2f} | {pnl_str} |\n"
+        out += "\n\n"
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(out)
         

@@ -950,6 +950,7 @@ def main() -> int:
                         old_payload = json.load(f)
                         
                     old_portfolio = old_payload.get("portfolio", {})
+                    trade_history = old_payload.get("trade_history", [])
                     old_div_port = old_portfolio.get("dividend", {})
                     old_gro_port = old_portfolio.get("growth", {})
                     
@@ -977,6 +978,7 @@ def main() -> int:
                         cp = current_prices.get(name, 0)
                         pnl = (cp / ep - 1) if ep > 0 else 0
                         diff["dividend"]["removed"].append({"name": name, "entry_price": ep, "exit_price": cp, "pnl": pnl})
+                        trade_history.append({"strategy": "dividend", "name": name, "entry_date": old_div_port.get(name, {}).get("entry_date", "未知"), "entry_price": ep, "exit_date": snapshot_date, "exit_price": cp, "pnl": pnl})
                         
                     for name in added_gro:
                         price = current_prices.get(name, 0)
@@ -986,6 +988,7 @@ def main() -> int:
                         cp = current_prices.get(name, 0)
                         pnl = (cp / ep - 1) if ep > 0 else 0
                         diff["growth"]["removed"].append({"name": name, "entry_price": ep, "exit_price": cp, "pnl": pnl})
+                        trade_history.append({"strategy": "growth", "name": name, "entry_date": old_gro_port.get(name, {}).get("entry_date", "未知"), "entry_price": ep, "exit_date": snapshot_date, "exit_price": cp, "pnl": pnl})
                         
                     for name in new_div:
                         if name in old_div_port and old_div_port[name].get("entry_price", 0) > 0:
@@ -1000,11 +1003,13 @@ def main() -> int:
                         
                 except Exception as e:
                     print(f"Error processing portfolio tracking: {e}")
+                    trade_history = []
                     for name in {r["股票简称"] for r in div_result_list}:
                         portfolio["dividend"][name] = {"entry_date": snapshot_date, "entry_price": current_prices.get(name, 0)}
                     for name in {r["股票简称"] for r in gro_result_list}:
                         portfolio["growth"][name] = {"entry_date": snapshot_date, "entry_price": current_prices.get(name, 0)}
             else:
+                trade_history = []
                 for name in {r["股票简称"] for r in div_result_list}:
                     portfolio["dividend"][name] = {"entry_date": snapshot_date, "entry_price": current_prices.get(name, 0)}
                     diff["dividend"]["added"].append({"name": name, "entry_price": current_prices.get(name, 0)})
@@ -1012,6 +1017,7 @@ def main() -> int:
                     portfolio["growth"][name] = {"entry_date": snapshot_date, "entry_price": current_prices.get(name, 0)}
                     diff["growth"]["added"].append({"name": name, "entry_price": current_prices.get(name, 0)})
         else:
+            trade_history = []
             for name in {r["股票简称"] for r in div_result_list}:
                 portfolio["dividend"][name] = {"entry_date": snapshot_date, "entry_price": current_prices.get(name, 0)}
             for name in {r["股票简称"] for r in gro_result_list}:
@@ -1043,6 +1049,7 @@ def main() -> int:
                 "growth_final": int(len(gro_result_list)),
             },
             "portfolio": portfolio,
+            "trade_history": trade_history,
             "results": {
                 "dividend": div_result_list,
                 "growth": gro_result_list,
