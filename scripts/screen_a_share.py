@@ -928,26 +928,106 @@ def main() -> int:
         div_result = output_columns(final_dividend)
         gro_result = output_columns(final_growth)
         
+        div_result_list = div_result.to_dict(orient="records")
+        gro_result_list = gro_result.to_dict(orient="records")
+        
+        current_prices = {row["股票简称"]: row.get("最新价", 0) for row in quote_stage.to_dict(orient="records")}
+        
         diff = {
             "dividend": {"added": [], "removed": []},
             "growth": {"added": [], "removed": []}
         }
+        portfolio = {
+            "dividend": {},
+            "growth": {}
+        }
+        
         if args.output_file:
             import os
             if os.path.exists(args.output_file):
                 try:
                     with open(args.output_file, "r", encoding="utf-8") as f:
                         old_payload = json.load(f)
-                    old_div = {r["股票简称"] for r in old_payload.get("results", {}).get("dividend", [])}
-                    old_gro = {r["股票简称"] for r in old_payload.get("results", {}).get("growth", [])}
-                    new_div = {r["股票简称"] for r in div_result.to_dict(orient="records")}
-                    new_gro = {r["股票简称"] for r in gro_result.to_dict(orient="records")}
-                    diff["dividend"]["added"] = list(new_div - old_div)
-                    diff["dividend"]["removed"] = list(old_div - new_div)
-                    diff["growth"]["added"] = list(new_gro - old_gro)
-                    diff["growth"]["removed"] = list(old_gro - new_gro)
-                except Exception:
-                    pass
+                        
+                    old_portfolio = old_payload.get("portfolio", {})
+                    old_div_port = old_portfolio.get("dividend", {})
+                    old_gro_port = old_portfolio.get("growth", {})
+                    
+                    # Backwards compatibility: if no portfolio in old json, construct from results
+                    if not old_div_port:
+                        old_div_port = {r["股票简称"]: {"entry_date": "未知", "entry_price": r.get("最新价", 0)} for r in old_payload.get("results", {}).get("dividend", [])}
+                    if not old_gro_port:
+                        old_gro_port = {r["股票简称"]: {"entry_date": "未知", "entry_price": r.get("最新价", 0)} for r in old_payload.get("results", {}).get("growth", [])}
+                        
+                    old_div = set(old_div_port.keys())
+                    old_gro = set(old_gro_port.keys())
+                    new_div = {r["股票简称"] for r in div_result_list}
+                    new_gro = {r["股票简称"] for r in gro_result_list}
+                    
+                    added_div = new_div - old_div
+                    removed_div = old_div - new_div
+                    added_gro = new_gro - old_gro
+                    removed_gro = old_gro - new_gro
+                    
+                    for name in added_div:
+                        price = current_prices.get(name, 0)
+                        diff["dividend"]["added"].append({"name": name, "entry_price": price})
+                    for name in removed_div:
+                        ep = old_div_port.get(name, {}).get("entry_price", 0)
+                        cp = current_prices.get(name, 0)
+                        pnl = (cp / ep - 1) if ep > 0 else 0
+                        diff["dividend"]["removed"].append({"name": name, "entry_price": ep, "exit_price": cp, "pnl": pnl})
+                        
+                    for name in added_gro:
+                        price = current_prices.get(name, 0)
+                        diff["growth"]["added"].append({"name": name, "entry_price": price})
+                    for name in removed_gro:
+                        ep = old_gro_port.get(name, {}).get("entry_price", 0)
+                        cp = current_prices.get(name, 0)
+                        pnl = (cp / ep - 1) if ep > 0 else 0
+                        diff["growth"]["removed"].append({"name": name, "entry_price": ep, "exit_price": cp, "pnl": pnl})
+                        
+                    for name in new_div:
+                        if name in old_div_port and old_div_port[name].get("entry_price", 0) > 0:
+                            portfolio["dividend"][name] = old_div_port[name]
+                        else:
+                            portfolio["dividend"][name] = {"entry_date": snapshot_date, "entry_price": current_prices.get(name, 0)}
+                    for name in new_gro:
+                        if name in old_gro_port and old_gro_port[name].get("entry_price", 0) > 0:
+                            portfolio["growth"][name] = old_gro_port[name]
+                        else:
+                            portfolio["growth"][name] = {"entry_date": snapshot_date, "entry_price": current_prices.get(name, 0)}
+                        
+                except Exception as e:
+                    print(f"Error processing portfolio tracking: {e}")
+                    for name in {r["股票简称"] for r in div_result_list}:
+                        portfolio["dividend"][name] = {"entry_date": snapshot_date, "entry_price": current_prices.get(name, 0)}
+                    for name in {r["股票简称"] for r in gro_result_list}:
+                        portfolio["growth"][name] = {"entry_date": snapshot_date, "entry_price": current_prices.get(name, 0)}
+            else:
+                for name in {r["股票简称"] for r in div_result_list}:
+                    portfolio["dividend"][name] = {"entry_date": snapshot_date, "entry_price": current_prices.get(name, 0)}
+                    diff["dividend"]["added"].append({"name": name, "entry_price": current_prices.get(name, 0)})
+                for name in {r["股票简称"] for r in gro_result_list}:
+                    portfolio["growth"][name] = {"entry_date": snapshot_date, "entry_price": current_prices.get(name, 0)}
+                    diff["growth"]["added"].append({"name": name, "entry_price": current_prices.get(name, 0)})
+        else:
+            for name in {r["股票简称"] for r in div_result_list}:
+                portfolio["dividend"][name] = {"entry_date": snapshot_date, "entry_price": current_prices.get(name, 0)}
+            for name in {r["股票简称"] for r in gro_result_list}:
+                portfolio["growth"][name] = {"entry_date": snapshot_date, "entry_price": current_prices.get(name, 0)}
+                
+        for row in div_result_list:
+            ep = portfolio["dividend"].get(row["股票简称"], {}).get("entry_price", 0)
+            cp = current_prices.get(row["股票简称"], 0)
+            row["入选价格"] = ep
+            row["累计涨跌幅"] = f"{(cp / ep - 1) * 100:.2f}%" if ep > 0 else "0.00%"
+            
+        for row in gro_result_list:
+            ep = portfolio["growth"].get(row["股票简称"], {}).get("entry_price", 0)
+            cp = current_prices.get(row["股票简称"], 0)
+            row["入选价格"] = ep
+            row["累计涨跌幅"] = f"{(cp / ep - 1) * 100:.2f}%" if ep > 0 else "0.00%"
 
         payload = {
             "mode": "screen_all",
@@ -959,12 +1039,13 @@ def main() -> int:
             "thresholds": threshold_payload(args),
             "stage_counts": {
                 "quote_stage": int(len(quote_stage)),
-                "dividend_final": int(len(div_result)),
-                "growth_final": int(len(gro_result)),
+                "dividend_final": int(len(div_result_list)),
+                "growth_final": int(len(gro_result_list)),
             },
+            "portfolio": portfolio,
             "results": {
-                "dividend": div_result.to_dict(orient="records"),
-                "growth": gro_result.to_dict(orient="records"),
+                "dividend": div_result_list,
+                "growth": gro_result_list,
             },
             "diff": diff
         }

@@ -48,7 +48,8 @@ def main():
     # 1. 红利策略
     div_headers = [
         "股票代码", "股票简称", "PE", "PB", "估值公式值", "TTM股息率",
-        "总市值(亿元)", "3年连续双增长", "3年平均净利率", "3年净利润CAGR", "3年经营现金流平均增速", "资产负债率"
+        "总市值(亿元)", "3年连续双增长", "3年平均净利率", "3年净利润CAGR", "3年经营现金流平均增速", "资产负债率",
+        "入选价格", "累计涨跌幅"
     ]
     out += render_table("一、稳健红利策略 (Dividend Strategy)", div_results, div_headers)
 
@@ -56,15 +57,26 @@ def main():
     if div_diff.get("added") or div_diff.get("removed"):
         out += "> **红利策略调仓提示**：\n"
         if div_diff.get("added"):
-            out += f"> 🟢 **新增入池**：{', '.join(div_diff['added'])}\n"
+            added_strs = [f"{item['name']} (入选价: {item.get('entry_price', 0):.2f})" if isinstance(item, dict) else str(item) for item in div_diff["added"]]
+            out += f"> 🟢 **新增入池**：{', '.join(added_strs)}\n"
         if div_diff.get("removed"):
-            out += f"> 🔴 **掉出观测**：{', '.join(div_diff['removed'])}\n"
+            removed_strs = []
+            for item in div_diff["removed"]:
+                if isinstance(item, dict):
+                    ep = item.get("entry_price", 0)
+                    cp = item.get("exit_price", 0)
+                    pnl = item.get("pnl", 0) * 100
+                    removed_strs.append(f"{item['name']} (入选价: {ep:.2f}, 剔除价: {cp:.2f}, 盈亏: {pnl:.2f}%)")
+                else:
+                    removed_strs.append(str(item))
+            out += f"> 🔴 **掉出观测**：{', '.join(removed_strs)}\n"
         out += "\n\n"
 
     # 2. 成长策略
     gro_headers = [
         "股票代码", "股票简称", "所处行业", "PE", "PB", "TTM股息率",
-        "总市值(亿元)", "3年连续双增长", "3年平均净资产收益率", "3年平均净利率", "3年净利润CAGR", "3年营收CAGR", "资产负债率"
+        "总市值(亿元)", "3年连续双增长", "3年平均净资产收益率", "3年平均净利率", "3年净利润CAGR", "3年营收CAGR", "资产负债率",
+        "入选价格", "累计涨跌幅"
     ]
     out += render_table("二、高增成长策略 (Growth Strategy)", gro_results, gro_headers)
 
@@ -72,9 +84,19 @@ def main():
     if gro_diff.get("added") or gro_diff.get("removed"):
         out += "> **成长策略调仓提示**：\n"
         if gro_diff.get("added"):
-            out += f"> 🟢 **新增入池**：{', '.join(gro_diff['added'])}\n"
+            added_strs = [f"{item['name']} (入选价: {item.get('entry_price', 0):.2f})" if isinstance(item, dict) else str(item) for item in gro_diff["added"]]
+            out += f"> 🟢 **新增入池**：{', '.join(added_strs)}\n"
         if gro_diff.get("removed"):
-            out += f"> 🔴 **掉出观测**：{', '.join(gro_diff['removed'])}\n"
+            removed_strs = []
+            for item in gro_diff["removed"]:
+                if isinstance(item, dict):
+                    ep = item.get("entry_price", 0)
+                    cp = item.get("exit_price", 0)
+                    pnl = item.get("pnl", 0) * 100
+                    removed_strs.append(f"{item['name']} (入选价: {ep:.2f}, 剔除价: {cp:.2f}, 盈亏: {pnl:.2f}%)")
+                else:
+                    removed_strs.append(str(item))
+            out += f"> 🔴 **掉出观测**：{', '.join(removed_strs)}\n"
         out += "\n\n"
 
     with open(output_file, "w", encoding="utf-8") as f:
